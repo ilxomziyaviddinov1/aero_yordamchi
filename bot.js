@@ -26,6 +26,25 @@ const SYSTEM_INSTRUCTION =
   "Foydalanuvchi savollariga o'zbek tilida qisqa, aniq va do'stona javob bering. " +
   "Murakkab yoki shaxsiy savollar bo'lsa, tez orada hisob egasi javob berishini ayting.";
 
+const TIMEZONE = "Asia/Tashkent";
+
+/** Har so'rovda joriy Toshkent vaqti bilan yangilangan system instruction. */
+function buildSystemInstruction() {
+  const now = new Intl.DateTimeFormat("uz-UZ", {
+    timeZone: TIMEZONE,
+    dateStyle: "full",
+    timeStyle: "short",
+  }).format(new Date());
+
+  return (
+    SYSTEM_INSTRUCTION +
+    `\n\nJoriy sana va vaqt (Toshkent): ${now}.` +
+    "\nVaqt yoki sana so'ralsa, faqat shu ma'lumotdan foydalaning." +
+    "\nValyuta kursi, yangiliklar kabi dolzarb ma'lumotlar so'ralsa, qidiruv vositasidan foydalaning." +
+    "\nOddiy matn bilan yozing: **, #, ` kabi Markdown belgilarini ishlatmang."
+  );
+}
+
 const FALLBACK_REPLY =
   "Kechirasiz, hozir javob bera olmadim. Hisob egasi tez orada siz bilan bog'lanadi.";
 
@@ -77,8 +96,9 @@ async function askGemini(chatKey, userText) {
     model: MODEL,
     contents,
     config: {
-      systemInstruction: SYSTEM_INSTRUCTION,
+      systemInstruction: buildSystemInstruction(),
       temperature: 0.7,
+      tools: [{ googleSearch: {} }], // dolzarb ma'lumotlar uchun Google qidiruvi
     },
   });
 
