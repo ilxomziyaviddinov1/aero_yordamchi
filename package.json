@@ -1,0 +1,19 @@
+{
+  "name": "telegram-business-ai-bot",
+  "version": "1.0.0",
+  "description": "Telegram Business uchun grammY va Gemini asosidagi AI avto-javob beruvchi bot",
+  "type": "module",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node --watch bot.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "dotenv": "^16.4.5",
+    "grammy": "^1.30.0"
+  }
+}
