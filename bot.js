@@ -19,7 +19,16 @@ if (!BOT_TOKEN || !GEMINI_API_KEY) {
 }
 
 // ---------- 2. Sozlamalar ----------
-const MODEL = "gemini-2.5-flash";
+// Modellar ro'yxati (vergul bilan). Birinchisining limiti tugasa, keyingisiga o'tiladi.
+// Har bir modelning kunlik limiti alohida hisoblanadi.
+const MODELS = (
+  process.env.GEMINI_MODELS ||
+  process.env.GEMINI_MODEL ||
+  "gemini-2.5-flash,gemini-2.5-flash-lite"
+)
+  .split(",")
+  .map((m) => m.trim())
+  .filter(Boolean);
 
 // ⚠️ SHU BLOKNI O'ZINGIZGA MOSLAB TO'LDIRING — bot shu ma'lumotlar asosida "siz kabi" gapiradi.
 const OWNER_PROFILE = {
@@ -47,7 +56,7 @@ QAT'IY USLUB QOIDALARI:
 2. Hech qachon "Sizga qanday yordam bera olaman?", "Yana savolingiz bormi?", "Yordam kerak bo'lsa, ayting" kabi xizmat ko'rsatish shablonlarini ishlatma. Bu robotdek eshitiladi.
 3. Suhbatdosh qanday yozsa, shunday javob ber: qisqa yozsa qisqa, hazil qilsa hazil bilan, "do'st/aka/dada" desa erkin va samimiy. Salomga salom qaytar ("salom" desa "salom", "assalomu alaykum" desa "vaalaykum assalom").
 4. Sen/siz tanlash: u "sen" desa "sen", "siz" desa "siz". Noma'lum bo'lsa, iliq "siz".
-5. Odatda 1-2 qisqa gap. Ro'yxat, sarlavha, uzun tushuntirish yo'q. Emoji juda kam.
+5. Oddiy suhbatda 1-2 qisqa gap. Lekin odam biror narsani so'rasa (fakt, tushuntirish, ro'yxat, maslahat, tarjima, hisob-kitob, kod), sun'iy intellektdek TO'LIQ va aniq javob ber, kerak bo'lsa uzunroq. Ro'yxat so'ralsa, raqamlab yoz (Markdown belgilarisiz). Emoji juda kam.
 6. Suhbat davomida o'zingni takrorlama, o'zbekcha so'zlashuv tilida yoz (kitobiy emas).
 7. Savol bo'lmasa, savol berib yuborma. Kerak bo'lsa, tabiiy qiziqish bilan bitta qisqa savol ber.
 
@@ -95,6 +104,9 @@ const histories = new Map();
 // Business ulanishi egasi: business_connection_id -> owner user id
 const connectionOwners = new Map();
 
+// Zaxira javob oxirgi marta qachon yuborilgani: chatId -> vaqt (ms)
+const lastFallback = new Map();
+
 // ---------- 4. Yordamchi funksiyalar ----------
 
 /** Business akkaunt egasining ID sini aniqlaydi (kesh bilan). */
@@ -109,6 +121,7 @@ async function getOwnerId(ctx) {
     connectionOwners.set(connId, connection.user.id);
     return connection.user.id;
   } catch (err) {
+    if (err?.status === 429) throw err; // limit tugagan: qayta urinish foydasiz
     console.warn("⚠️ Business ulanish ma'lumotini olib bo'lmadi:", err.message);
     return null;
   }
@@ -121,14 +134,15 @@ function trimHistory(history) {
   return trimmed;
 }
 
-/** Bitta Gemini so'rovi (useSearch = Google qidiruvi yoqilgan yoki yo'q). */
-async function callGemini(contents, useSearch) {
+/** Bitta Gemini so'rovi (model va Google qidiruvi tanlanadi). */
+async function callGemini(model, contents, useSearch) {
   const response = await ai.models.generateContent({
-    model: MODEL,
+    model,
     contents,
     config: {
       systemInstruction: buildSystemInstruction(),
       temperature: 0.9,
+      thinkingConfig: { thinkingBudget: 0 }, // "o'ylash" tokenlarini o'chiradi: tezroq va arzonroq
       ...(useSearch ? { tools: [{ googleSearch: {} }] } : {}),
     },
   });
@@ -141,7 +155,10 @@ async function callGemini(contents, useSearch) {
   return answer;
 }
 
-/** Gemini'dan javob oladi. Xatolikda tarix buzilmaydi. */
+/** Limit (429) yoki band server (503) bo'lsa, keyingi modelga o'tish kerakmi. */
+const isSwitchable = (err) => err?.status === 429 || err?.status === 503;
+
+/** Gemini'dan javob oladi: modellar zanjiri + qidiruvsiz zaxira. Tarix buzilmaydi. */
 async function askGemini(chatKey, userText) {
   const previous = histories.get(chatKey) ?? [];
   const contents = trimHistory([
@@ -150,16 +167,32 @@ async function askGemini(chatKey, userText) {
   ]);
 
   let answer;
-  try {
-    // 1-urinish: Google qidiruvi bilan
-    answer = await callGemini(contents, true);
-  } catch (err) {
-    console.warn(
-      `⚠️ Qidiruv bilan so'rov xato berdi (${err?.status ?? "?"}): ${err?.message}. Qidiruvsiz qayta uriniladi...`
-    );
-    // 2-urinish: qidiruvsiz
-    answer = await callGemini(contents, false);
+  let lastError;
+
+  for (const model of MODELS) {
+    try {
+      try {
+        answer = await callGemini(model, contents, true); // qidiruv bilan
+      } catch (err) {
+        if (isSwitchable(err)) throw err;
+        console.warn(
+          `⚠️ [${model}] qidiruv bilan xato (${err?.status ?? "?"}): ${err?.message}. Qidiruvsiz qayta uriniladi...`
+        );
+        answer = await callGemini(model, contents, false); // qidiruvsiz
+      }
+      if (model !== MODELS[0]) console.log(`ℹ️ Zaxira model ishlatildi: ${model}`);
+      break;
+    } catch (err) {
+      lastError = err;
+      if (isSwitchable(err)) {
+        console.warn(`⚠️ [${model}] limit/band (${err.status}). Keyingi modelga o'tilmoqda...`);
+        continue;
+      }
+      throw err;
+    }
   }
+
+  if (!answer) throw lastError ?? new Error("Hech bir model javob bermadi");
 
   // Faqat muvaffaqiyatli bo'lsa tarixga yoziladi
   histories.set(
@@ -208,8 +241,11 @@ bot.on("business_message:text", async (ctx) => {
   } catch (err) {
     console.error(`❌ Xatolik (chat ${chatId}):`, err?.message ?? err);
 
-    // Xatolikda ham mijozga muloyim javob qaytaramiz
+    // Xatolikda mijozga muloyim javob qaytaramiz (bir chatga 10 daqiqada 1 marta)
     try {
+      const last = lastFallback.get(chatId) ?? 0;
+      if (Date.now() - last < 10 * 60 * 1000) return;
+      lastFallback.set(chatId, Date.now());
       await ctx.reply(FALLBACK_REPLY, { business_connection_id: connId });
     } catch (replyErr) {
       console.error("❌ Zaxira javobni yuborib bo'lmadi:", replyErr?.message);
@@ -264,5 +300,5 @@ bot.start({
   // Business hodisalari aniq yoqilgan bo'lishi kerak
   allowed_updates: ["message", "business_connection", "business_message"],
   onStart: (info) =>
-    console.log(`🚀 Bot ishga tushdi: @${info.username} | Model: ${MODEL}`),
+    console.log(`🚀 Bot ishga tushdi: @${info.username} | Modellar: ${MODELS.join(", ")}`),
 });
