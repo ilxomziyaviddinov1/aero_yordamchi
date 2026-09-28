@@ -1,0 +1,17 @@
+# Render Blueprint: botni Background Worker sifatida 24/7 ishlatadi
+services:
+  - type: worker
+    name: telegram-business-ai-bot
+    runtime: node
+    plan: starter          # Background worker uchun bepul reja yo'q
+    region: frankfurt      # O'zbekistonga yaqinroq (Yevropa) region
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true       # GitHub'ga push qilinganda avtomatik deploy
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: BOT_TOKEN
+        sync: false        # Qiymat Render dashboard'da qo'lda kiritiladi
+      - key: GEMINI_API_KEY
+        sync: false
