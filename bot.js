@@ -114,33 +114,58 @@ async function getOwnerId(ctx) {
   }
 }
 
-/** Tarixga xabar qo'shadi va uzunlikni cheklaydi. */
-function pushHistory(key, role, text) {
-  const history = histories.get(key) ?? [];
-  history.push({ role, parts: [{ text }] });
-  while (history.length > MAX_HISTORY_TURNS) history.shift();
-  histories.set(key, history);
-  return history;
+/** Tarixni kesadi va u doim "user" xabari bilan boshlanishini ta'minlaydi. */
+function trimHistory(history) {
+  const trimmed = history.slice(-MAX_HISTORY_TURNS);
+  while (trimmed.length && trimmed[0].role !== "user") trimmed.shift();
+  return trimmed;
 }
 
-/** Gemini'dan javob oladi. */
-async function askGemini(chatKey, userText) {
-  const contents = pushHistory(chatKey, "user", userText);
-
+/** Bitta Gemini so'rovi (useSearch = Google qidiruvi yoqilgan yoki yo'q). */
+async function callGemini(contents, useSearch) {
   const response = await ai.models.generateContent({
     model: MODEL,
     contents,
     config: {
       systemInstruction: buildSystemInstruction(),
       temperature: 0.9,
-      tools: [{ googleSearch: {} }], // dolzarb ma'lumotlar uchun Google qidiruvi
+      ...(useSearch ? { tools: [{ googleSearch: {} }] } : {}),
     },
   });
 
   const answer = response.text?.trim();
-  if (!answer) throw new Error("Gemini bo'sh javob qaytardi");
+  if (!answer) {
+    const reason = response.candidates?.[0]?.finishReason ?? "noma'lum";
+    throw new Error(`Gemini bo'sh javob qaytardi (finishReason: ${reason})`);
+  }
+  return answer;
+}
 
-  pushHistory(chatKey, "model", answer);
+/** Gemini'dan javob oladi. Xatolikda tarix buzilmaydi. */
+async function askGemini(chatKey, userText) {
+  const previous = histories.get(chatKey) ?? [];
+  const contents = trimHistory([
+    ...previous,
+    { role: "user", parts: [{ text: userText }] },
+  ]);
+
+  let answer;
+  try {
+    // 1-urinish: Google qidiruvi bilan
+    answer = await callGemini(contents, true);
+  } catch (err) {
+    console.warn(
+      `⚠️ Qidiruv bilan so'rov xato berdi (${err?.status ?? "?"}): ${err?.message}. Qidiruvsiz qayta uriniladi...`
+    );
+    // 2-urinish: qidiruvsiz
+    answer = await callGemini(contents, false);
+  }
+
+  // Faqat muvaffaqiyatli bo'lsa tarixga yoziladi
+  histories.set(
+    chatKey,
+    trimHistory([...contents, { role: "model", parts: [{ text: answer }] }])
+  );
   return answer;
 }
 
